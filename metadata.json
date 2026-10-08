@@ -1,0 +1,6 @@
+{
+  "name": "Atmosphere Weather",
+  "description": "A clean, mobile-responsive weather app powered by Smithery MCP services.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
