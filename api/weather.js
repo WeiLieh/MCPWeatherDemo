@@ -1,4 +1,8 @@
-const MCP_SERVER_URL = process.env.MCP_SERVER_URL || 'https://mcp.smithery.ai/ngweilieh';
+const DEFAULT_MCP_URL = 'https://server.smithery.ai/isdaniel/mcp_weather_server';
+
+function getMcpEndpoint() {
+  return process.env.MCP_SERVER_URL || DEFAULT_MCP_URL;
+}
 
 /**
  * Helper to parse either JSON or Server-Sent Events (SSE) JSON-RPC responses from an MCP server.
@@ -22,9 +26,11 @@ function parseMcpResponse(text) {
 }
 
 /**
- * Attempts to query weather from the user's Smithery MCP server (https://mcp.smithery.ai/ngweilieh).
+ * Queries weather from https://server.smithery.ai/isdaniel/mcp_weather_server
+ * Specifically supports `get_current_weather` and `get_weather_details` which accept `{ city: string }`.
  */
-async function querySmitheryMcpWeather(city, latitude, longitude) {
+async function querySmitheryMcpWeather(city) {
+  const mcpServerUrl = getMcpEndpoint();
   const apiKey = process.env.SMITHERY_API_KEY || process.env.MCP_API_KEY || '';
   const headers = {
     'Content-Type': 'application/json',
@@ -34,7 +40,13 @@ async function querySmitheryMcpWeather(city, latitude, longitude) {
     headers['Authorization'] = `Bearer ${apiKey}`;
   }
 
-  const initRes = await fetch(MCP_SERVER_URL, {
+  let requestUrl = mcpServerUrl;
+  if (apiKey && !requestUrl.includes('api_key=')) {
+    const sep = requestUrl.includes('?') ? '&' : '?';
+    requestUrl = `${requestUrl}${sep}api_key=${encodeURIComponent(apiKey)}`;
+  }
+
+  const initRes = await fetch(requestUrl, {
     method: 'POST',
     headers,
     body: JSON.stringify({
@@ -55,6 +67,7 @@ async function querySmitheryMcpWeather(city, latitude, longitude) {
       mcpAttempted: true,
       mcpStatus: initRes.status,
       mcpUsed: false,
+      mcpToolName: 'get_current_weather',
       mcpData: null,
     };
   }
@@ -65,58 +78,49 @@ async function querySmitheryMcpWeather(city, latitude, longitude) {
     sessionHeaders['mcp-session-id'] = sessionId;
   }
 
-  // List available tools on https://mcp.smithery.ai/ngweilieh
-  const listRes = await fetch(MCP_SERVER_URL, {
+  // Send notifications/initialized per MCP specification
+  await fetch(requestUrl, {
     method: 'POST',
     headers: sessionHeaders,
     body: JSON.stringify({
       jsonrpc: '2.0',
-      id: 2,
-      method: 'tools/list',
-      params: {},
+      method: 'notifications/initialized',
     }),
-    signal: AbortSignal.timeout(5000),
-  });
+    signal: AbortSignal.timeout(3000),
+  }).catch(() => null);
 
-  if (!listRes.ok) {
-    return {
-      mcpAttempted: true,
-      mcpStatus: listRes.status,
-      mcpUsed: false,
-      mcpData: null,
-    };
+  // List available tools on https://server.smithery.ai/isdaniel/mcp_weather_server
+  let selectedToolName = 'get_current_weather';
+  try {
+    const listRes = await fetch(requestUrl, {
+      method: 'POST',
+      headers: sessionHeaders,
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/list',
+        params: {},
+      }),
+      signal: AbortSignal.timeout(4000),
+    });
+
+    if (listRes.ok) {
+      const listPayload = parseMcpResponse(await listRes.text());
+      const tools = listPayload?.result?.tools || [];
+      const preferred =
+        tools.find((t) => t.name === 'get_current_weather') ||
+        tools.find((t) => t.name === 'get_weather_details') ||
+        tools.find((t) => /weather/i.test(t.name));
+      if (preferred) {
+        selectedToolName = preferred.name;
+      }
+    }
+  } catch {
+    // Default to get_current_weather from isdaniel/mcp_weather_server
   }
 
-  const listPayload = parseMcpResponse(await listRes.text());
-  const tools = listPayload?.result?.tools || [];
-
-  // Look for a weather or forecast tool exposed by the MCP server
-  const weatherTool =
-    tools.find((t) => /weather|forecast|temperature|climate|current/i.test(t.name)) ||
-    tools[0];
-
-  if (!weatherTool) {
-    return {
-      mcpAttempted: true,
-      mcpStatus: 200,
-      mcpUsed: true,
-      mcpData: null,
-    };
-  }
-
-  // Construct versatile arguments covering common MCP weather tool schemas
-  const toolArgs = {
-    city,
-    location: city,
-    query: city,
-    q: city,
-    latitude,
-    longitude,
-    lat: latitude,
-    lon: longitude,
-  };
-
-  const callRes = await fetch(MCP_SERVER_URL, {
+  // Call `get_current_weather` (or `get_weather_details`) with `{ city }` as required by isdaniel/mcp_weather_server
+  const callRes = await fetch(requestUrl, {
     method: 'POST',
     headers: sessionHeaders,
     body: JSON.stringify({
@@ -124,8 +128,10 @@ async function querySmitheryMcpWeather(city, latitude, longitude) {
       id: 3,
       method: 'tools/call',
       params: {
-        name: weatherTool.name,
-        arguments: toolArgs,
+        name: selectedToolName,
+        arguments: {
+          city,
+        },
       },
     }),
     signal: AbortSignal.timeout(6000),
@@ -136,6 +142,7 @@ async function querySmitheryMcpWeather(city, latitude, longitude) {
       mcpAttempted: true,
       mcpStatus: callRes.status,
       mcpUsed: false,
+      mcpToolName: selectedToolName,
       mcpData: null,
     };
   }
@@ -151,7 +158,7 @@ async function querySmitheryMcpWeather(city, latitude, longitude) {
     mcpAttempted: true,
     mcpStatus: 200,
     mcpUsed: true,
-    mcpToolName: weatherTool.name,
+    mcpToolName: selectedToolName,
     mcpData: mcpText,
   };
 }
@@ -188,6 +195,7 @@ function mapWeatherCode(code, isDay = 1) {
 
 export default async function weatherHandler(req, res) {
   try {
+    const mcpServerUrl = getMcpEndpoint();
     const query = typeof req.query.q === 'string' ? req.query.q.trim() : '';
     const latParam = req.query.lat ? parseFloat(String(req.query.lat)) : null;
     const lonParam = req.query.lon ? parseFloat(String(req.query.lon)) : null;
@@ -204,7 +212,6 @@ export default async function weatherHandler(req, res) {
       longitude = lonParam;
       locationName = typeof req.query.name === 'string' && req.query.name ? req.query.name : 'Current Location';
       country = '';
-      // Reverse geocode via BigDataCloud free client endpoint or Open-Meteo if needed
       try {
         const revRes = await fetch(
           `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${latitude}&longitude=${longitude}&localityLanguage=en`,
@@ -237,11 +244,12 @@ export default async function weatherHandler(req, res) {
       timezone = match.timezone || 'auto';
     }
 
-    // Connect to the Smithery MCP server (https://mcp.smithery.ai/ngweilieh) and fetch live meteorological telemetry in parallel
+    // Connect to https://server.smithery.ai/isdaniel/mcp_weather_server and Open-Meteo (the upstream engine used by isdaniel/mcp_weather_server) in parallel
     const [mcpResult, meteoRes] = await Promise.all([
-      querySmitheryMcpWeather(locationName, latitude, longitude).catch((err) => ({
+      querySmitheryMcpWeather(locationName).catch((err) => ({
         mcpAttempted: true,
         mcpUsed: false,
+        mcpToolName: 'get_current_weather',
         mcpError: err instanceof Error ? err.message : 'MCP connection error',
       })),
       fetch(
@@ -259,7 +267,7 @@ export default async function weatherHandler(req, res) {
     const condition = mapWeatherCode(current.weather_code, current.is_day);
 
     // Build next 8 hours slice
-    const nowIso = current.time; // e.g. "2026-10-08T14:00"
+    const nowIso = current.time;
     let startIdx = meteo.hourly.time.findIndex((t) => t >= nowIso);
     if (startIdx === -1) startIdx = 0;
 
@@ -317,7 +325,7 @@ export default async function weatherHandler(req, res) {
       hourly,
       daily,
       mcp: {
-        endpoint: MCP_SERVER_URL,
+        endpoint: mcpServerUrl,
         ...mcpResult,
       },
     });

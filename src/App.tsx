@@ -155,7 +155,7 @@ export default function App() {
         ok: false,
         status: 'unreachable',
         authenticated: false,
-        endpoint: 'https://mcp.smithery.ai/ngweilieh',
+        endpoint: 'https://server.smithery.ai/isdaniel/mcp_weather_server',
         latencyMs: 0,
       });
     }
@@ -490,7 +490,7 @@ export default function App() {
                 {weather.mcp?.mcpData && (
                   <div className="mt-6 pt-5 border-t border-slate-100 text-xs text-slate-600 leading-relaxed">
                     <span className="font-semibold text-slate-800">
-                      MCP Response ({weather.mcp.mcpToolName || 'ngweilieh'}):{' '}
+                      MCP Response ({weather.mcp.mcpToolName || 'get_current_weather'}):{' '}
                     </span>
                     <span>{weather.mcp.mcpData}</span>
                   </div>
@@ -593,7 +593,9 @@ export default function App() {
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-medium text-slate-700">MCP Service</span>
             <span aria-hidden="true">·</span>
-            <span className="font-mono-num">https://mcp.smithery.ai/ngweilieh</span>
+            <span className="font-mono-num">
+              {health?.endpoint || 'https://server.smithery.ai/isdaniel/mcp_weather_server'}
+            </span>
             {health && (
               <>
                 <span aria-hidden="true">·</span>
